@@ -1,0 +1,247 @@
+---
+title: "COVID 19"
+author: "Praneeth Ramesh"
+date: "4/29/2024"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+rm(list = ls())
+library(tidyverse)
+library(lubridate)
+library(ggplot2)
+library(dplyr)
+```
+
+
+
+## Introduction
+
+Covid 19 was a very terrible virus, which affected the world in many negative ways. The global pandemic took many live, hurt many people, and harmed most of the world's economies so it is a good idea to dig through the data and see what we can learn from it. 
+
+
+
+## Data Collection
+
+To begin we will download data from github. This data is from John Hopkins. 
+
+```{r,results ='hide', warning=FALSE}
+
+
+url_lookup <- "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/UID_ISO_FIPS_LookUp_Table.csv"
+uid <- read_csv(url_lookup)
+uid <- data.frame(uid)
+us_cases <- read.csv("https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/time_series_covid19_confirmed_US.csv")
+
+us_deaths <- read.csv("https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/time_series_covid19_deaths_US.csv")
+
+
+glo_cases = read_csv("https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/time_series_covid19_confirmed_global.csv")
+
+glo_deaths = read.csv("https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/time_series_covid19_deaths_global.csv")
+
+
+glo_cases <- data.frame(glo_cases)
+glo_deaths <- data.frame(glo_deaths)
+
+us_cases <- data.frame(us_cases)
+us_deaths <- data.frame(us_deaths)
+
+```
+
+
+
+Now we will clean up our data so that it is usable.
+
+
+```{r}
+
+us_deaths <- us_deaths %>%
+  pivot_longer(cols = -(UID:Population),
+               names_to = 'date',
+               values_to = 'deaths') %>%
+  select(Admin2:deaths) %>%
+  mutate(date = mdy(str_remove(date, "^X"))) %>%
+  filter(date <= as.Date("2021-12-31")) %>%
+  select(-c(Lat, Long_))
+
+
+
+us_cases <- us_cases %>%
+  pivot_longer(cols = -(UID:Combined_Key),
+               names_to = 'date',
+               values_to = 'cases') %>%
+  select(Admin2:cases) %>%
+  mutate(date = mdy(str_remove(date, "^X"))) %>%
+  filter(date <= as.Date("2021-12-31")) %>%
+  select(-c(Lat, Long_))
+
+us <- us_cases %>%
+  full_join(us_deaths)
+
+us <- us %>%
+  filter(us$cases>0)
+
+```
+
+
+
+
+
+
+## Looking at the data
+
+After cleaning we will now take a look at some statistics about the crimes in the city. 
+
+
+```{r , echo=FALSE}
+
+str(us)
+
+```
+
+```{r}
+head(us)
+```
+
+
+
+## Visualizing
+
+In order to visualize the state data that we want to see 
+
+
+
+
+```{r , echo=FALSE}
+
+us_2020 <- us_deaths %>%
+  filter(year(date)== 2020) %>%
+   group_by(Province_State) %>% summarize(total_deaths = sum(deaths, na.rm = TRUE), .groups = 'drop') %>%
+  arrange(desc(total_deaths)) %>%
+  top_n(10, total_deaths)
+
+
+vis <- ggplot(us_2020, aes(x = reorder(Province_State, total_deaths), y = total_deaths, fill = Province_State)) +
+  geom_col() +
+  labs(title = "Total COVID-19 Deaths by State in 2020",
+       x = "State",
+       y= "Total Deaths")  +
+  theme_minimal() +
+  theme(legend.position = "none")  
+
+
+print(vis)
+```
+These are the 10 states with the most deaths. Since we recently just looked at New York, lets look at a different state instead lets dig deeper into California and Texas. We know that the pandemic spread throughout 2020. But there is the question of if its rise was equal everywhere. It might be fair to assume that due to different states lock-down practices, the spread might have been controlled better in some states than others. So lets compare California and Texas.
+
+
+
+To do this lets first write a function that will give us the information we want from both states. 
+
+
+```{r, echo=FALSE}
+
+calculate_deaths <- function(data, state) {
+  state_data <- data %>%
+    filter(Province_State == state, year(date) == 2020) %>%
+    group_by(month = floor_date(date, "month")) %>%
+    summarize(
+      total_deaths = sum(deaths, na.rm = TRUE),
+      population = unique(Population)[1],
+      .groups = 'drop'
+    ) %>%
+    mutate(deaths_per_1k = ((total_deaths / population) * 1000))
+  return(state_data)
+}
+
+
+cali_data <- calculate_deaths(us_deaths, "California")
+texas_data <- calculate_deaths(us_deaths, "Texas")
+
+
+```
+
+
+Now that we have our results lets visualize them so that we can see if we can spot any trends.
+
+```{r}
+
+combined_data <- bind_rows(
+  cali_data %>%
+  mutate(state = "California"),
+  texas_data %>%
+  mutate(state = "Texas")
+)
+
+
+
+ggplot(combined_data, aes(x = month, y = deaths_per_1k, color = state, group = state)) +
+  geom_line() +
+  geom_point() +
+  labs(title = "Monthly COVID-19 Death Rates per 1000 People for California an Texas",
+       x = "Month of 2020",
+       y = "Deaths per 1000",
+       color = "State") +
+  theme_minimal()
+
+
+```
+
+Looking at the data its pretty apparent that the death rate skyrocket in Texas while it only steadily increased in California. So lets take California's model and apply it to Texas to see if there would be a big difference in the death rates.
+
+
+```{r}
+
+california_m <- lm(deaths_per_1k ~ month, data = cali_data)
+
+texas_predictions <- predict(california_m, newdata = texas_data)
+texas_data$predicted_deaths_per_1k = texas_predictions
+
+```
+
+
+
+
+
+```{r}
+ggplot(texas_data, aes(x = month)) +
+  geom_line(aes(y =deaths_per_1k, colour =  "Actual")) +
+  geom_line(aes(y =predicted_deaths_per_1k, colour = "Predicted")) +
+  labs(title = "Actual vs. Death Rates for Texas under California's model",
+       x = "Month of 2020",
+       y = "Deaths per 1000 People",
+       color = "Legend")
+```
+
+From our model, it is clear to see how poorly Texas performed. 
+
+
+
+## Bias
+
+One potential big cause of bias here would be false reporting. There could be incentives to not accurately report information. Maybe hospitals over-report to get more funding or states under-report to look better.
+
+## Conclusion
+
+
+This study showed us just how important proper precautions are during a pandemic. When state governments decide to not trust scientists it leads to real damage and even death. California did an admirable job, while Texas' performance was a deadly failure. We should take what happened during the pandemic and let it inform how we choose to respond to new viruses in the future. 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
